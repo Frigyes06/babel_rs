@@ -18,45 +18,35 @@ pub struct Packet {
 }
 
 impl Packet {
-    /// Babel magic value used in the packet header (RFC 8966 §4.2)
     pub const BABEL_MAGIC: u8 = 42;
-    /// Babel protocol version used in the packet header (RFC 8966 §4.2)
     pub const BABEL_VERSION: u8 = 2;
 
-    /// Create an empty packet
     pub fn new() -> Self {
         Packet { tlvs: Vec::new() }
     }
 
-    /// Create a packet with pre-populated TLVs
     pub fn with_tlvs(tlvs: Vec<Tlv>) -> Self {
         Packet { tlvs }
     }
 
-    /// Add a TLV to this packet
     pub fn add_tlv(&mut self, tlv: Tlv) {
         self.tlvs.push(tlv);
     }
 
-    /// Serialize packet with Babel header (Magic, Version, Body length) and TLV body
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Serialize TLV body first
         let body: Vec<u8> = self.tlvs.iter().flat_map(|t| t.to_bytes()).collect();
         let body_len = body.len() as u16;
 
-        // Build header + body
         let mut buf = Vec::with_capacity(4 + body.len());
-        buf.push(Self::BABEL_MAGIC); // Magic
-        buf.push(Self::BABEL_VERSION); // Version
-        buf.extend_from_slice(&body_len.to_be_bytes()); // Body length
-        buf.extend_from_slice(&body); // TLVs
+        buf.push(Self::BABEL_MAGIC);
+        buf.push(Self::BABEL_VERSION);
+        buf.extend_from_slice(&body_len.to_be_bytes());
+        buf.extend_from_slice(&body);
 
         buf
     }
 
-    /// Parse a Packet from raw bytes (with or without a Babel header).
     pub fn from_bytes(buf: &[u8]) -> Result<Self, String> {
-        // Try to detect a Babel header: Magic=42, Version=2.
         let tlv_slice =
             if buf.len() >= 4 && buf[0] == Self::BABEL_MAGIC && buf[1] == Self::BABEL_VERSION {
                 let body_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
@@ -65,7 +55,6 @@ impl Packet {
                 }
                 &buf[4..4 + body_len]
             } else {
-                // No valid header detected — treat entire buffer as TLV body.
                 buf
             };
 
@@ -73,26 +62,21 @@ impl Packet {
         Ok(Packet { tlvs })
     }
 
-    /// Return the Babel magic value (first header byte).
     pub fn magic() -> u8 {
         Self::BABEL_MAGIC
     }
 
-    /// Return the Babel protocol version (second header byte).
     pub fn version() -> u8 {
         Self::BABEL_VERSION
     }
 
-    /// Compute the body length field for the header (number of TLV bytes).
     pub fn body_len(&self) -> u16 {
         self.tlvs.iter().map(|t| t.to_bytes().len()).sum::<usize>() as u16
     }
 
-    /// Send this packet via a new UDP socket to a destination address (IPv4 or IPv6)
     pub fn send_to<A: ToSocketAddrs>(&self, addr: A) -> io::Result<usize> {
         let buf = self.to_bytes();
         let mut last_err = None;
-        // Try each resolved destination; bind on IPv4 or IPv6 wildcard as appropriate
         for target in addr.to_socket_addrs()? {
             let socket = if target.is_ipv4() {
                 UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?
@@ -109,7 +93,6 @@ impl Packet {
         Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "send_to failed")))
     }
 
-    /// Bind a UDP socket to the Babel port on the given local address
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpSocket> {
         UdpSocket::bind(addr).and_then(|s| {
             s.set_nonblocking(false)?;
@@ -117,7 +100,6 @@ impl Packet {
         })
     }
 
-    /// Receive a packet from the given socket, parse TLVs from Babel body
     pub fn recv(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<(Vec<Tlv>, SocketAddr)> {
         let (amt, src) = socket.recv_from(buf)?;
         let pkt = Packet::from_bytes(&buf[..amt])
@@ -132,7 +114,7 @@ impl Packet {
     }
 
     pub fn build_padn(n: u8) -> Self {
-        Packet::with_tlvs(vec![Tlv::PadN { n: n }])
+        Packet::with_tlvs(vec![Tlv::PadN { n }])
     }
 
     pub fn build_ack_request(opaque: u16, interval: u16) -> Self {

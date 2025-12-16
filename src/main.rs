@@ -1,16 +1,16 @@
 // src/main.rs
 
+mod event;
 mod neighbor;
 mod node;
 mod packet;
 mod routing;
 mod tlv;
-mod event;
 
 use std::io;
 use std::net::Ipv4Addr;
 
-use node::{BabelConfig, BabelNode};
+use node::{AdvertisedPrefix, BabelConfig, BabelNode};
 
 fn main() -> io::Result<()> {
     // Example router-id – you’ll want something stable/derived from an address.
@@ -20,9 +20,16 @@ fn main() -> io::Result<()> {
     let iface = Ipv4Addr::UNSPECIFIED;
     let iface_index = 0;
 
-    let config = BabelConfig {
-        hello_interval_ms: 1000,
-    };
+    let config = BabelConfig::new()
+        .hello_interval_ms(1000)
+        .ihu_interval_ms(4000)
+        .update_interval_ms(10000)
+        .with_advertised_prefix(AdvertisedPrefix {
+            ae: 1,    // IPv4
+            plen: 24, // /24
+            prefix: vec![192, 0, 2],
+            metric: 256,
+        });
 
     let mut node = BabelNode::new_v4_multicast(iface, iface_index, router_id, config)?;
     println!("Babel node started with router-id {:?}", router_id);

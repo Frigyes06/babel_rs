@@ -1,22 +1,11 @@
 // src/neighbor.rs
 //! Neighbor tracking for a Babel node.
-//!
-//! This module handles:
-//! - Tracking neighbors seen via Hello/IHU TLVs
-//! - Reachability estimation (hello history bitmap)
-//! - Link cost computation (rx/tx cost)
-//! - Pruning stale neighbors
-//!
-//! It is the logical layer above raw TLV parsing but below route computation.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 /// Representation of a Babel neighbor.
-///
-/// A neighbor is keyed by the remote socket address and the interface
-/// over which it was heard.
 #[derive(Debug, Clone)]
 pub struct Neighbor {
     /// Remote source address of Babel packets (IP + port).
@@ -63,8 +52,6 @@ impl Neighbor {
         self.last_hello_seqno = Some(seqno);
         self.hello_interval_ms = Some(interval_ms);
         self.last_hello_rx = Some(now);
-
-        // Shift history, set LSB
         self.hello_history = (self.hello_history << 1) | 1;
     }
 
@@ -79,10 +66,7 @@ impl Neighbor {
         self.txcost = Some(txcost);
     }
 
-    /// Compute link cost (naive):
-    /// - If both rx/tx known → max(rx, tx)
-    /// - Else if one known → that
-    /// - Else None
+    /// Compute link cost (naive).
     pub fn link_cost(&self) -> Option<u16> {
         match (self.rxcost, self.txcost) {
             (Some(rx), Some(tx)) => Some(rx.max(tx)),
@@ -183,6 +167,7 @@ impl NeighborTable {
         before - self.neighbors.len()
     }
 
+    /// Remove all stale neighbors; return their socket addresses.
     pub fn prune_stale_with_addrs(&mut self, now: Instant, multiplier: u32) -> Vec<SocketAddr> {
         let mut removed = Vec::new();
         self.neighbors.retain(|addr, n| {

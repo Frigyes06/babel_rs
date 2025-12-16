@@ -1,8 +1,5 @@
 // src/event.rs
 //! High-level events emitted by a Babel node.
-//!
-//! This allows applications to react to neighbor / route changes without
-//! constantly polling and diffing internal state.
 
 use std::net::SocketAddr;
 
@@ -20,6 +17,6 @@ pub enum Event {
     /// A route was added or improved for this prefix.
     RouteUpdated(RouteKey, Route),
 
-    /// The best route for a prefix changed (could be addition/removal/update).
+    /// The best route for a prefix changed.
     BestRouteChanged(RouteKey, Route),
 }

@@ -1,12 +1,9 @@
 // src/node.rs
 //! High-level Babel node abstraction.
-//!
-//! This wraps Packet + TLV + NeighborTable into a usable component
-//! that can send hellos, receive packets, and maintain neighbor state.
 
 use std::collections::HashMap;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket}; // + IpAddr
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use crate::event::Event;
@@ -15,15 +12,35 @@ use crate::packet::{BABEL_PORT, MULTICAST_V4_ADDR, Packet};
 use crate::routing::{Route, RouteKey, RoutingTable};
 use crate::tlv::Tlv;
 
+/// A statically advertised prefix (e.g. "this node owns 192.0.2.0/24").
+#[derive(Debug, Clone)]
+pub struct AdvertisedPrefix {
+    /// Address Encoding (1 = IPv4, 2 = IPv6, etc).
+    pub ae: u8,
+    /// Prefix length in bits.
+    pub plen: u8,
+    /// Raw prefix bytes (length = ceil(plen / 8)).
+    pub prefix: Vec<u8>,
+    /// Metric to advertise for this prefix.
+    pub metric: u16,
+}
+
+/// Configuration for a Babel node.
 #[derive(Debug, Clone)]
 pub struct BabelConfig {
     pub hello_interval_ms: u16,
+    pub ihu_interval_ms: u16,
+    pub update_interval_ms: u16,
+    pub advertised_prefixes: Vec<AdvertisedPrefix>,
 }
 
 impl Default for BabelConfig {
     fn default() -> Self {
         BabelConfig {
             hello_interval_ms: 4000,
+            ihu_interval_ms: 4000,
+            update_interval_ms: 10000,
+            advertised_prefixes: Vec::new(),
         }
     }
 }
@@ -39,6 +56,24 @@ impl BabelConfig {
         self.hello_interval_ms = value;
         self
     }
+
+    /// Set the IHU interval (in milliseconds).
+    pub fn ihu_interval_ms(mut self, value: u16) -> Self {
+        self.ihu_interval_ms = value;
+        self
+    }
+
+    /// Set the Update interval (in milliseconds) for static prefixes.
+    pub fn update_interval_ms(mut self, value: u16) -> Self {
+        self.update_interval_ms = value;
+        self
+    }
+
+    /// Add a statically advertised prefix.
+    pub fn with_advertised_prefix(mut self, prefix: AdvertisedPrefix) -> Self {
+        self.advertised_prefixes.push(prefix);
+        self
+    }
 }
 
 /// A simple synchronous Babel node.
@@ -46,8 +81,17 @@ pub struct BabelNode {
     socket: UdpSocket,
     router_id: [u8; 8],
     seqno: u16,
+
     hello_interval: Duration,
     last_hello: Option<Instant>,
+
+    ihu_interval: Duration,
+    last_ihu: Option<Instant>,
+
+    update_interval: Duration,
+    last_update_advert: Option<Instant>,
+    advertised_prefixes: Vec<AdvertisedPrefix>,
+
     pub iface_index: u32,
     pub neighbors: NeighborTable,
     pub routes: RoutingTable,
@@ -78,6 +122,11 @@ impl BabelNode {
             seqno: 1,
             hello_interval: Duration::from_millis(config.hello_interval_ms as u64),
             last_hello: None,
+            ihu_interval: Duration::from_millis(config.ihu_interval_ms as u64),
+            last_ihu: None,
+            update_interval: Duration::from_millis(config.update_interval_ms as u64),
+            last_update_advert: None,
+            advertised_prefixes: config.advertised_prefixes,
             iface_index,
             neighbors: NeighborTable::new(),
             routes: RoutingTable::new(),
@@ -86,9 +135,18 @@ impl BabelNode {
         })
     }
 
+    /// One non-blocking iteration of the node.
     pub fn poll(&mut self) -> io::Result<()> {
         if let Err(e) = self.maybe_send_hello() {
             eprintln!("[BabelNode] error sending hello: {e}");
+        }
+
+        if let Err(e) = self.maybe_send_ihus() {
+            eprintln!("[BabelNode] error sending IHU: {e}");
+        }
+
+        if let Err(e) = self.maybe_send_updates() {
+            eprintln!("[BabelNode] error sending Update: {e}");
         }
 
         if let Some((tlvs, src)) = self.recv_once()? {
@@ -109,6 +167,10 @@ impl BabelNode {
         self.router_id
     }
 
+    pub fn seqno(&self) -> u16 {
+        self.seqno
+    }
+
     /// Immutable view of all known neighbors.
     pub fn neighbors(&self) -> impl Iterator<Item = &crate::neighbor::Neighbor> {
         self.neighbors.all()
@@ -122,14 +184,6 @@ impl BabelNode {
     /// Convenience: best route for a given key, if any.
     pub fn best_route(&self, key: &crate::routing::RouteKey) -> Option<&crate::routing::Route> {
         self.routes.best_route(key)
-    }
-
-    pub fn seqno(&self) -> u16 {
-        self.seqno
-    }
-
-    fn source_info_mut(&mut self, src: SocketAddr) -> &mut SourceInfo {
-        self.source_info.entry(src).or_default()
     }
 
     /// Send a multicast Hello.
@@ -166,6 +220,103 @@ impl BabelNode {
         }
     }
 
+    /// Send IHUs to all known neighbors.
+    fn send_ihus(&mut self) -> io::Result<usize> {
+        let mut total_bytes = 0usize;
+
+        let interval_ms: u16 = self.ihu_interval.as_millis().try_into().unwrap_or(u16::MAX);
+        let rxcost: u16 = 256;
+
+        for n in self.neighbors.all() {
+            let ip = n.addr.ip();
+            let (ae, addr_opt) = match ip {
+                IpAddr::V4(v4) => (1u8, Some(IpAddr::V4(v4))),
+                IpAddr::V6(v6) => (2u8, Some(IpAddr::V6(v6))),
+            };
+
+            let pkt = Packet::build_ihu(ae, rxcost, interval_ms, addr_opt);
+            total_bytes += pkt.send_to(n.addr)?;
+        }
+
+        Ok(total_bytes)
+    }
+
+    /// Send IHUs if enough time has passed.
+    pub fn maybe_send_ihus(&mut self) -> io::Result<Option<usize>> {
+        if self.neighbors.all().next().is_none() {
+            return Ok(None);
+        }
+
+        let now = Instant::now();
+        match self.last_ihu {
+            None => {
+                let n = self.send_ihus()?;
+                self.last_ihu = Some(now);
+                Ok(Some(n))
+            }
+            Some(last) if now.duration_since(last) >= self.ihu_interval => {
+                let n = self.send_ihus()?;
+                self.last_ihu = Some(now);
+                Ok(Some(n))
+            }
+            Some(_) => Ok(None),
+        }
+    }
+
+    /// Send Updates for statically configured prefixes (multicast).
+    fn send_static_updates(&mut self) -> io::Result<usize> {
+        if self.advertised_prefixes.is_empty() {
+            return Ok(0);
+        }
+
+        let mut total_bytes = 0usize;
+        let interval_ms: u16 = self
+            .update_interval
+            .as_millis()
+            .try_into()
+            .unwrap_or(u16::MAX);
+
+        for p in &self.advertised_prefixes {
+            let pkt = Packet::build_update(
+                p.ae,
+                0, // flags
+                p.plen,
+                0, // omitted
+                interval_ms,
+                self.seqno,
+                p.metric,
+                p.prefix.clone(),
+            );
+            let dest: SocketAddr = (MULTICAST_V4_ADDR, BABEL_PORT).into();
+            total_bytes += pkt.send_to(dest)?;
+        }
+
+        self.seqno = self.seqno.wrapping_add(1);
+        Ok(total_bytes)
+    }
+
+    /// Send static Updates if enough time has passed.
+    pub fn maybe_send_updates(&mut self) -> io::Result<Option<usize>> {
+        if self.advertised_prefixes.is_empty() {
+            return Ok(None);
+        }
+
+        let now = Instant::now();
+        match self.last_update_advert {
+            None => {
+                let n = self.send_static_updates()?;
+                self.last_update_advert = Some(now);
+                Ok(Some(n))
+            }
+            Some(last) if now.duration_since(last) >= self.update_interval => {
+                let n = self.send_static_updates()?;
+                self.last_update_advert = Some(now);
+                Ok(Some(n))
+            }
+            Some(_) => Ok(None),
+        }
+    }
+
     /// Receive one packet (non-blocking).
     pub fn recv_once(&self) -> io::Result<Option<(Vec<Tlv>, SocketAddr)>> {
         let mut buf = [0u8; 1500];
@@ -181,7 +332,7 @@ impl BabelNode {
     pub fn handle_tlvs_from(&mut self, src: SocketAddr, tlvs: &[Tlv]) {
         let now = Instant::now();
         let src_ip = src.ip();
-        let iface_index = self.iface_index; // copy, so we don't borrow self for this
+        let iface_index = self.iface_index;
 
         for tlv in tlvs {
             match tlv {
@@ -207,14 +358,12 @@ impl BabelNode {
                 }
 
                 Tlv::RouterId { router_id, .. } => {
-                    // Short-lived mutable borrow of source_info
                     let sinfo = self.source_info.entry(src).or_default();
                     sinfo.router_id = Some(*router_id);
                 }
 
                 Tlv::NextHop { ae: _, addr, .. } => {
                     let sinfo = self.source_info.entry(src).or_default();
-                    // If no explicit nexthop address, fall back to src IP.
                     sinfo.next_hop = addr.or(Some(src_ip));
                 }
 
@@ -229,7 +378,6 @@ impl BabelNode {
                     prefix,
                     sub_tlvs: _,
                 } => {
-                    // Look up router-id and nexthop learned for this source.
                     let router_id_opt = self.source_info.get(&src).and_then(|si| si.router_id);
 
                     if let Some(router_id) = router_id_opt {
@@ -245,11 +393,8 @@ impl BabelNode {
                             prefix: prefix.clone(),
                         };
 
-                        // Best route before we touch the table
                         let old_best = self.routes.best_route(&key).cloned();
 
-                        // Clone key because we move it into Route but still want
-                        // to use it later for lookups and events.
                         let route = Route {
                             key: key.clone(),
                             metric: *metric,
@@ -262,10 +407,8 @@ impl BabelNode {
                         let changed = self.routes.install_or_update(route);
                         if changed {
                             if let Some(best) = self.routes.best_route(&key).cloned() {
-                                // RouteUpdated: this prefix/path changed
                                 self.push_event(Event::RouteUpdated(key.clone(), best.clone()));
 
-                                // Did the best route for this prefix change?
                                 let best_changed = match old_best {
                                     None => true,
                                     Some(ref old) => {
@@ -294,9 +437,13 @@ impl BabelNode {
                     }
                 }
 
-                // For now we ignore these; later we can implement responses.
-                Tlv::RouteRequest { .. } => {}
-                Tlv::SeqnoRequest { .. } => {}
+                Tlv::RouteRequest { .. } => {
+                    // TODO: respond with matching Update(s)
+                }
+
+                Tlv::SeqnoRequest { .. } => {
+                    // TODO: respond with appropriate Update
+                }
 
                 _ => {
                     // Other TLVs currently ignored.
@@ -325,17 +472,7 @@ impl BabelNode {
         println!("[BabelNode] running, router-id = {:?}", self.router_id);
 
         loop {
-            // 1) Send hello if needed
-            if let Err(e) = self.maybe_send_hello() {
-                eprintln!("[BabelNode] error sending hello: {e}");
-            }
-
-            // 2) Receive packets
-            if let Some((tlvs, src)) = self.recv_once()? {
-                self.handle_tlvs_from(src, &tlvs);
-            }
-
-            // 3) Sleep a little so we don't busy-spin
+            self.poll()?;
             std::thread::sleep(Duration::from_millis(10));
         }
     }
