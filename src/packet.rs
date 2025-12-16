@@ -1,5 +1,6 @@
 // src/packet.rs
-// Babel packet construction and I/O helpers with RFC-compliant builders, multicast support, and integration tests
+// Babel packet construction and I/O helpers with RFC-compliant builders,
+// multicast support, and integration tests
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
@@ -53,18 +54,20 @@ impl Packet {
         buf
     }
 
+    /// Parse a Packet from raw bytes (with or without a Babel header).
     pub fn from_bytes(buf: &[u8]) -> Result<Self, String> {
         // Try to detect a Babel header: Magic=42, Version=2.
-        let tlv_slice = if buf.len() >= 4 && buf[0] == 42 && buf[1] == 2 {
-            let body_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-            if 4 + body_len > buf.len() {
-                return Err("Babel body length exceeds buffer".into());
-            }
-            &buf[4..4 + body_len]
-        } else {
-            // No valid header detected — treat entire buffer as TLV body.
-            buf
-        };
+        let tlv_slice =
+            if buf.len() >= 4 && buf[0] == Self::BABEL_MAGIC && buf[1] == Self::BABEL_VERSION {
+                let body_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+                if 4 + body_len > buf.len() {
+                    return Err("Babel body length exceeds buffer".into());
+                }
+                &buf[4..4 + body_len]
+            } else {
+                // No valid header detected — treat entire buffer as TLV body.
+                buf
+            };
 
         let tlvs = Tlv::parse_all(tlv_slice)?;
         Ok(Packet { tlvs })
@@ -123,12 +126,15 @@ impl Packet {
     }
 
     //=== RFC-compliant convenience builders ===
+
     pub fn build_pad1() -> Self {
         Packet::with_tlvs(vec![Tlv::Pad1])
     }
+
     pub fn build_padn(n: u8) -> Self {
         Packet::with_tlvs(vec![Tlv::PadN { n: n }])
     }
+
     pub fn build_ack_request(opaque: u16, interval: u16) -> Self {
         Packet::with_tlvs(vec![Tlv::AckRequest {
             opaque,
@@ -136,12 +142,14 @@ impl Packet {
             sub_tlvs: Vec::new(),
         }])
     }
+
     pub fn build_ack(opaque: u16) -> Self {
         Packet::with_tlvs(vec![Tlv::Ack {
             opaque,
             sub_tlvs: Vec::new(),
         }])
     }
+
     pub fn build_hello(flags: u16, seqno: u16, interval: u16) -> Self {
         Packet::with_tlvs(vec![Tlv::Hello {
             flags,
@@ -150,6 +158,7 @@ impl Packet {
             sub_tlvs: Vec::new(),
         }])
     }
+
     pub fn build_ihu(ae: u8, rxcost: u16, interval: u16, addr: Option<IpAddr>) -> Self {
         Packet::with_tlvs(vec![Tlv::Ihu {
             ae,
@@ -159,12 +168,14 @@ impl Packet {
             sub_tlvs: Vec::new(),
         }])
     }
+
     pub fn build_router_id(router_id: [u8; 8]) -> Self {
         Packet::with_tlvs(vec![Tlv::RouterId {
             router_id,
             sub_tlvs: Vec::new(),
         }])
     }
+
     pub fn build_next_hop(ae: u8, addr: Option<IpAddr>) -> Self {
         Packet::with_tlvs(vec![Tlv::NextHop {
             ae,
@@ -172,6 +183,7 @@ impl Packet {
             sub_tlvs: Vec::new(),
         }])
     }
+
     pub fn build_update(
         ae: u8,
         flags: u8,
@@ -194,6 +206,7 @@ impl Packet {
             sub_tlvs: Vec::new(),
         }])
     }
+
     pub fn build_route_request(ae: u8, plen: u8, prefix: Vec<u8>) -> Self {
         Packet::with_tlvs(vec![Tlv::RouteRequest {
             ae,
@@ -202,6 +215,7 @@ impl Packet {
             sub_tlvs: Vec::new(),
         }])
     }
+
     pub fn build_seqno_request(
         ae: u8,
         plen: u8,
@@ -222,11 +236,13 @@ impl Packet {
     }
 
     //=== Multicast support ===
+
     pub fn bind_multicast_v4(interface: Ipv4Addr) -> io::Result<UdpSocket> {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, BABEL_PORT))?;
         socket.join_multicast_v4(&MULTICAST_V4_ADDR, &interface)?;
         Ok(socket)
     }
+
     pub fn bind_multicast_v6(interface_index: u32) -> io::Result<UdpSocket> {
         let socket = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, BABEL_PORT))?;
         socket.join_multicast_v6(&MULTICAST_V6_ADDR, interface_index)?;
@@ -244,7 +260,7 @@ mod tests {
     fn test_build_and_serialize() {
         let pkt = Packet::build_hello(0x0001, 42, 1000);
         let bytes = pkt.to_bytes();
-        assert!(bytes.len() > 4);
+        assert!(bytes.len() > 4); // header + at least one TLV
     }
 
     #[test]
