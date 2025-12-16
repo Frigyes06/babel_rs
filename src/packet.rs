@@ -45,6 +45,23 @@ impl Packet {
         buf
     }
 
+    pub fn from_bytes(buf: &[u8]) -> Result<Self, String> {
+        // Try to detect a Babel header: Magic=42, Version=2.
+        let tlv_slice = if buf.len() >= 4 && buf[0] == 42 && buf[1] == 2 {
+            let body_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+            if 4 + body_len > buf.len() {
+                return Err("Babel body length exceeds buffer".into());
+            }
+            &buf[4..4 + body_len]
+        } else {
+            // No valid header detected — treat entire buffer as TLV body.
+            buf
+        };
+
+        let tlvs = Tlv::parse_all(tlv_slice)?;
+        Ok(Packet { tlvs })
+    }
+
     /// Send this packet via a new UDP socket to a destination address (IPv4 or IPv6)
     pub fn send_to<A: ToSocketAddrs>(&self, addr: A) -> io::Result<usize> {
         let buf = self.to_bytes();
@@ -77,31 +94,11 @@ impl Packet {
     /// Receive a packet from the given socket, parse TLVs from Babel body
     pub fn recv(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<(Vec<Tlv>, SocketAddr)> {
         let (amt, src) = socket.recv_from(buf)?;
-        if amt < 4 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Packet too short",
-            ));
-        }
-        let data = &buf[..amt];
-        if data[0] != 42 || data[1] != 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid Babel header",
-            ));
-        }
-        let body_len = u16::from_be_bytes([data[2], data[3]]) as usize;
-        if body_len > amt - 4 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Body length exceeds packet",
-            ));
-        }
-        let payload = &data[4..4 + body_len];
-        let tlvs =
-            Tlv::parse_all(payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok((tlvs, src))
+        let pkt = Packet::from_bytes(&buf[..amt])
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok((pkt.tlvs, src))
     }
+
 
     //=== RFC-compliant convenience builders ===
     pub fn build_pad1() -> Self {
