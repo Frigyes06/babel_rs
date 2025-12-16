@@ -182,6 +182,19 @@ impl NeighborTable {
         self.neighbors.retain(|_, n| !n.is_stale(now, multiplier));
         before - self.neighbors.len()
     }
+
+    pub fn prune_stale_with_addrs(&mut self, now: Instant, multiplier: u32) -> Vec<SocketAddr> {
+        let mut removed = Vec::new();
+        self.neighbors.retain(|addr, n| {
+            if n.is_stale(now, multiplier) {
+                removed.push(*addr);
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    }
 }
 
 #[cfg(test)]

@@ -11,13 +11,14 @@
 //! - [`neighbor`]: neighbor tracking and reachability
 //! - [`routing`]: routing table and route selection
 
+pub mod event;
 pub mod neighbor;
 pub mod node;
 pub mod packet;
 pub mod routing;
 pub mod tlv;
 
-// High-level re-exports (what most users need)
+pub use crate::event::Event;
 pub use crate::neighbor::{Neighbor, NeighborTable};
 pub use crate::node::{BabelConfig, BabelNode};
 pub use crate::packet::{BABEL_PORT, MULTICAST_V4_ADDR, MULTICAST_V6_ADDR, Packet};

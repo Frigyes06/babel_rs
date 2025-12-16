@@ -5,6 +5,7 @@ mod node;
 mod packet;
 mod routing;
 mod tlv;
+mod event;
 
 use std::io;
 use std::net::Ipv4Addr;

@@ -9,6 +9,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket}; // + IpAddr
 use std::time::{Duration, Instant};
 
+use crate::event::Event;
 use crate::neighbor::NeighborTable;
 use crate::packet::{BABEL_PORT, MULTICAST_V4_ADDR, Packet};
 use crate::routing::{Route, RouteKey, RoutingTable};
@@ -49,8 +50,9 @@ pub struct BabelNode {
     last_hello: Option<Instant>,
     pub iface_index: u32,
     pub neighbors: NeighborTable,
-    pub routes: RoutingTable,                     // <--- new
-    source_info: HashMap<SocketAddr, SourceInfo>, // <--- new
+    pub routes: RoutingTable,
+    source_info: HashMap<SocketAddr, SourceInfo>,
+    events: Vec<Event>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -78,11 +80,12 @@ impl BabelNode {
             last_hello: None,
             iface_index,
             neighbors: NeighborTable::new(),
-            routes: RoutingTable::new(), // <--- new
-            source_info: HashMap::new(), // <--- new
+            routes: RoutingTable::new(),
+            source_info: HashMap::new(),
+            events: Vec::new(),
         })
     }
-    
+
     pub fn poll(&mut self) -> io::Result<()> {
         if let Err(e) = self.maybe_send_hello() {
             eprintln!("[BabelNode] error sending hello: {e}");
@@ -90,6 +93,12 @@ impl BabelNode {
 
         if let Some((tlvs, src)) = self.recv_once()? {
             self.handle_tlvs_from(src, &tlvs);
+        }
+
+        // Simple neighbor pruning hook
+        let now = Instant::now();
+        for addr in self.neighbors.prune_stale_with_addrs(now, 3) {
+            self.push_event(Event::NeighborDown(addr));
         }
 
         Ok(())
@@ -179,8 +188,15 @@ impl BabelNode {
                 Tlv::Hello {
                     seqno, interval, ..
                 } => {
+                    let is_new = self.neighbors.get(&src).is_none();
                     self.neighbors
                         .update_on_hello(src, iface_index, *seqno, *interval, now);
+
+                    if is_new {
+                        if let Some(n) = self.neighbors.get(&src).cloned() {
+                            self.push_event(Event::NeighborUp(src, n));
+                        }
+                    }
                 }
 
                 Tlv::Ihu {
@@ -213,7 +229,7 @@ impl BabelNode {
                     prefix,
                     sub_tlvs: _,
                 } => {
-                    // Immutable borrow of source_info just to read router_id / next_hop
+                    // Look up router-id and nexthop learned for this source.
                     let router_id_opt = self.source_info.get(&src).and_then(|si| si.router_id);
 
                     if let Some(router_id) = router_id_opt {
@@ -229,8 +245,11 @@ impl BabelNode {
                             prefix: prefix.clone(),
                         };
 
+                        // Best route before we touch the table
+                        let old_best = self.routes.best_route(&key).cloned();
+
                         // Clone key because we move it into Route but still want
-                        // to use it when querying best_route afterwards.
+                        // to use it later for lookups and events.
                         let route = Route {
                             key: key.clone(),
                             metric: *metric,
@@ -242,7 +261,25 @@ impl BabelNode {
 
                         let changed = self.routes.install_or_update(route);
                         if changed {
-                            if let Some(best) = self.routes.best_route(&key) {
+                            if let Some(best) = self.routes.best_route(&key).cloned() {
+                                // RouteUpdated: this prefix/path changed
+                                self.push_event(Event::RouteUpdated(key.clone(), best.clone()));
+
+                                // Did the best route for this prefix change?
+                                let best_changed = match old_best {
+                                    None => true,
+                                    Some(ref old) => {
+                                        old.metric != best.metric || old.seqno != best.seqno
+                                    }
+                                };
+
+                                if best_changed {
+                                    self.push_event(Event::BestRouteChanged(
+                                        key.clone(),
+                                        best.clone(),
+                                    ));
+                                }
+
                                 println!(
                                     "[BabelNode] new/updated route installed; best now: {}",
                                     best.summary()
@@ -266,6 +303,21 @@ impl BabelNode {
                 }
             }
         }
+    }
+
+    fn push_event(&mut self, ev: Event) {
+        self.events.push(ev);
+    }
+
+    /// Take and return all pending events since the last call.
+    pub fn drain_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Convenience: poll the node and return any events produced.
+    pub fn poll_with_events(&mut self) -> io::Result<Vec<Event>> {
+        self.poll()?;
+        Ok(self.drain_events())
     }
 
     /// Simple blocking event loop for a Babel node (demo mode).
