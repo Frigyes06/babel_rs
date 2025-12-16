@@ -128,7 +128,8 @@ impl Tlv {
         }
         // Read type byte
         let t = cur.read_u8().map_err(|e| e.to_string())?;
-        if t < 2 {
+        if t == 0 {
+            // Pad1 is a single byte, no length field
             return Ok(Tlv::Pad1);
         }
         // Read length
@@ -145,25 +146,31 @@ impl Tlv {
         // Values 0 and >10 are treated as Pad1 (0) or Unknown respectively
         // t==0 handled earlier, so here t ∈ 1..=255 except 0
         let result: Tlv = match t {
+            1 => {
+                // PadN: we already consumed `length` bytes into `payload`.
+                // For our representation, we just remember how many padding bytes there were.
+                let n = length as u8;
+                Tlv::PadN { n }
+            }
             2 => {
                 let mut p = Cursor::new(&payload);
                 p.read_u16::<BigEndian>().map_err(|e| e.to_string())?; // reserved
                 let opaque = p.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
                 let interval = p.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
-                // let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
+                let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
                 Tlv::AckRequest {
                     opaque,
                     interval,
-                    sub_tlvs: Vec::new(),
+                    sub_tlvs: subs,
                 }
             }
             3 => {
                 let mut p = Cursor::new(&payload);
                 let opaque = p.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
-                //let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
+                let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
                 Tlv::Ack {
                     opaque,
-                    sub_tlvs: Vec::new(),
+                    sub_tlvs: subs,
                 }
             }
             4 => {
@@ -171,12 +178,12 @@ impl Tlv {
                 let flags = p.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
                 let seqno = p.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
                 let interval = p.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
-                //let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
+                let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
                 Tlv::Hello {
                     flags,
                     seqno,
                     interval,
-                    sub_tlvs: Vec::new(),
+                    sub_tlvs: subs,
                 }
             }
             5 => {
@@ -198,13 +205,13 @@ impl Tlv {
                     }
                     _ => None,
                 };
-                //let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
+                let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
                 Tlv::Ihu {
                     ae,
                     rxcost,
                     interval,
                     addr,
-                    sub_tlvs: Vec::new(),
+                    sub_tlvs: subs,
                 }
             }
             6 => {
@@ -212,10 +219,10 @@ impl Tlv {
                 p.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
                 let mut router_id = [0; 8];
                 p.read_exact(&mut router_id).map_err(|e| e.to_string())?;
-                //let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
+                let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
                 Tlv::RouterId {
                     router_id,
-                    sub_tlvs: Vec::new(),
+                    sub_tlvs: subs,
                 }
             }
             7 => {
@@ -235,11 +242,11 @@ impl Tlv {
                     }
                     _ => None,
                 };
-                //let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
+                let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
                 Tlv::NextHop {
                     ae,
                     addr,
-                    sub_tlvs: Vec::new(),
+                    sub_tlvs: subs,
                 }
             }
             8 => {
@@ -256,7 +263,7 @@ impl Tlv {
                 let prefix_len = ((plen as usize + 7) / 8).saturating_sub(omitted as usize);
                 let mut prefix = vec![0u8; prefix_len];
                 p.read_exact(&mut prefix).map_err(|e| e.to_string())?;
-                // let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
+                let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
                 Tlv::Update {
                     ae,
                     flags,
@@ -266,7 +273,7 @@ impl Tlv {
                     seqno,
                     metric,
                     prefix,
-                    sub_tlvs: Vec::new(),
+                    sub_tlvs: subs,
                 }
             }
             9 => {
@@ -277,12 +284,12 @@ impl Tlv {
                 let prefix_len = (plen as usize + 7) / 8;
                 let mut prefix = vec![0u8; prefix_len];
                 p.read_exact(&mut prefix).map_err(|e| e.to_string())?;
-                //let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
+                let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
                 Tlv::RouteRequest {
                     ae,
                     plen,
                     prefix,
-                    sub_tlvs: Vec::new(),
+                    sub_tlvs: subs,
                 }
             }
             10 => {
@@ -298,7 +305,7 @@ impl Tlv {
                 let prefix_len = (plen as usize + 7) / 8;
                 let mut prefix = vec![0u8; prefix_len];
                 p.read_exact(&mut prefix).map_err(|e| e.to_string())?;
-                //let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
+                let subs = SubTlv::parse_list(&payload[p.position() as usize..])?;
                 Tlv::SeqnoRequest {
                     ae,
                     plen,
@@ -306,7 +313,7 @@ impl Tlv {
                     hop_count,
                     router_id,
                     prefix,
-                    sub_tlvs: Vec::new(),
+                    sub_tlvs: subs,
                 }
             }
             other => Tlv::Unknown {
@@ -528,33 +535,42 @@ impl Tlv {
 impl SubTlv {
     /// Parse a sequence of sub-TLVs from a slice.
     /// Stops at end-of-buffer; errors on malformed fields.
-    /*
     pub fn parse_list(buf: &[u8]) -> Result<Vec<SubTlv>, String> {
         let mut out = Vec::new();
         let mut cur = Cursor::new(buf);
+
         while (cur.position() as usize) < buf.len() {
             let stype = cur.read_u8().map_err(|e| e.to_string())?;
+
             if stype == 0 {
+                // Pad1: single byte, no length
                 out.push(SubTlv::Pad1);
                 continue;
             }
+
             let slen = cur.read_u8().map_err(|e| e.to_string())? as usize;
-            let mut data = vec![0; slen];
+            let mut data = vec![0u8; slen];
             cur.read_exact(&mut data).map_err(|e| e.to_string())?;
+
             let s = match stype {
-                1 => SubTlv::PadN { n },
+                1 => {
+                    // PadN sub-TLV: content is MBZ, we only keep the count
+                    SubTlv::PadN { n: slen as u8 }
+                }
                 other => SubTlv::Unknown { stype: other, data },
             };
+
             out.push(s);
         }
+
         Ok(out)
     }
-    */
+
     /// Compute the full wire length of this sub-TLV (including header).
     fn len(&self) -> usize {
         match self {
             SubTlv::Pad1 => 1,
-            SubTlv::PadN { n } => usize::from(2 + n),
+            SubTlv::PadN { n } => 2 + (*n as usize),
             SubTlv::Unknown { data, .. } => 2 + data.len(),
         }
     }
@@ -583,47 +599,273 @@ impl SubTlv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    // --- Basic TLVs ---
 
     #[test]
-    fn test_pad1() {
+    fn pad1_to_bytes() {
         let pad1 = Tlv::Pad1;
-        assert_eq!(pad1.to_bytes(), vec![0])
+        assert_eq!(pad1.to_bytes(), vec![0]);
     }
 
     #[test]
-    fn test_padn() {
+    fn padn_to_bytes() {
         let pad4 = Tlv::PadN { n: 4 };
-        assert_eq!(pad4.to_bytes(), vec![1, 4, 0, 0, 0, 0])
+        assert_eq!(pad4.to_bytes(), vec![1, 4, 0, 0, 0, 0]);
     }
 
     #[test]
-    fn test_ackreq() {
+    fn padn_roundtrip() {
+        let original = Tlv::PadN { n: 3 };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn ack_request_to_bytes() {
         let ackreq = Tlv::AckRequest {
             opaque: 278,
             interval: 400,
             sub_tlvs: Vec::new(),
         };
-        assert_eq!(ackreq.to_bytes(), vec![2, 6, 0, 0, 1, 22, 1, 144])
+        assert_eq!(ackreq.to_bytes(), vec![2, 6, 0, 0, 1, 22, 1, 144]);
     }
 
     #[test]
-    fn test_ack() {
+    fn ack_to_bytes() {
         let ack = Tlv::Ack {
             opaque: 278,
             sub_tlvs: Vec::new(),
         };
-        assert_eq!(ack.to_bytes(), vec![3, 2, 1, 22])
+        assert_eq!(ack.to_bytes(), vec![3, 2, 1, 22]);
     }
 
     #[test]
-    fn test_hello() {
+    fn hello_to_bytes() {
         let hello = Tlv::Hello {
             flags: 0,
             seqno: 278,
             interval: 400,
             sub_tlvs: Vec::new(),
         };
-        assert_eq!(hello.to_bytes(), vec![4, 6, 0, 0, 1, 22, 1, 144])
+        assert_eq!(hello.to_bytes(), vec![4, 6, 0, 0, 1, 22, 1, 144]);
     }
-    // TODO! Implement tests for all Tlvs
+
+    #[test]
+    fn hello_roundtrip() {
+        let original = Tlv::Hello {
+            flags: 0x0102,
+            seqno: 0x2030,
+            interval: 1000,
+            sub_tlvs: Vec::new(),
+        };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    // --- TLVs with addresses ---
+
+    #[test]
+    fn ihu_ipv4_roundtrip() {
+        let original = Tlv::Ihu {
+            ae: 1,
+            rxcost: 256,
+            interval: 200,
+            addr: Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))),
+            sub_tlvs: Vec::new(),
+        };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn ihu_ipv6_roundtrip() {
+        let original = Tlv::Ihu {
+            ae: 2,
+            rxcost: 100,
+            interval: 50,
+            addr: Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+            sub_tlvs: Vec::new(),
+        };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn nexthop_ipv4_roundtrip() {
+        let original = Tlv::NextHop {
+            ae: 1,
+            addr: Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))),
+            sub_tlvs: Vec::new(),
+        };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn router_id_roundtrip() {
+        let original = Tlv::RouterId {
+            router_id: [1, 2, 3, 4, 5, 6, 7, 8],
+            sub_tlvs: Vec::new(),
+        };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    // --- Prefix-carrying TLVs ---
+
+    #[test]
+    fn update_roundtrip_simple_prefix() {
+        // /24 IPv4-like prefix: 192.0.2.0/24 -> 3 bytes of prefix
+        let original = Tlv::Update {
+            ae: 1,
+            flags: 0,
+            plen: 24,
+            omitted: 0,
+            interval: 500,
+            seqno: 10,
+            metric: 256,
+            prefix: vec![192, 0, 2],
+            sub_tlvs: Vec::new(),
+        };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn route_request_roundtrip() {
+        let original = Tlv::RouteRequest {
+            ae: 1,
+            plen: 16,
+            prefix: vec![10, 0],
+            sub_tlvs: Vec::new(),
+        };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn seqno_request_roundtrip() {
+        let original = Tlv::SeqnoRequest {
+            ae: 1,
+            plen: 24,
+            seqno: 42,
+            hop_count: 3,
+            router_id: [0xaa, 0xbb, 0xcc, 0xdd, 1, 2, 3, 4],
+            prefix: vec![192, 0, 2],
+            sub_tlvs: Vec::new(),
+        };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    // --- Unknown TLV ---
+
+    #[test]
+    fn unknown_tlv_roundtrip() {
+        let original = Tlv::Unknown {
+            tlv_type: 250,
+            data: vec![1, 2, 3, 4],
+        };
+        let bytes = original.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    // --- Sub-TLVs ---
+
+    #[test]
+    fn subtlv_pad1_to_bytes_and_parse() {
+        let st = SubTlv::Pad1;
+        let bytes = st.to_bytes();
+        assert_eq!(bytes, vec![0]);
+
+        let parsed = SubTlv::parse_list(&bytes).unwrap();
+        assert_eq!(parsed, vec![SubTlv::Pad1]);
+    }
+
+    #[test]
+    fn subtlv_padn_to_bytes_and_parse() {
+        let st = SubTlv::PadN { n: 3 };
+        let bytes = st.to_bytes();
+        // type=1, len=3, then 3 MBZ bytes
+        assert_eq!(bytes, vec![1, 3, 0, 0, 0]);
+
+        let parsed = SubTlv::parse_list(&bytes).unwrap();
+        assert_eq!(parsed, vec![SubTlv::PadN { n: 3 }]);
+    }
+
+    #[test]
+    fn subtlv_unknown_roundtrip() {
+        let st = SubTlv::Unknown {
+            stype: 99,
+            data: vec![0xaa, 0xbb],
+        };
+        let bytes = st.to_bytes();
+        let parsed = SubTlv::parse_list(&bytes).unwrap();
+        assert_eq!(parsed, vec![st]);
+    }
+
+    #[test]
+    fn tlv_with_subtlvs_roundtrip() {
+        let hello = Tlv::Hello {
+            flags: 1,
+            seqno: 2,
+            interval: 3,
+            sub_tlvs: vec![
+                SubTlv::Pad1,
+                SubTlv::PadN { n: 2 },
+                SubTlv::Unknown {
+                    stype: 10,
+                    data: vec![0xde, 0xad],
+                },
+            ],
+        };
+
+        let bytes = hello.to_bytes();
+        let mut cur = Cursor::new(bytes.as_slice());
+        let parsed = Tlv::parse(&mut cur).unwrap();
+        assert_eq!(parsed, hello);
+    }
+
+    // --- parse_all ---
+
+    #[test]
+    fn parse_all_multiple_tlvs() {
+        let t1 = Tlv::Pad1;
+        let t2 = Tlv::PadN { n: 2 };
+        let t3 = Tlv::Ack {
+            opaque: 42,
+            sub_tlvs: Vec::new(),
+        };
+
+        let mut buf = Vec::new();
+        buf.extend(t1.to_bytes());
+        buf.extend(t2.to_bytes());
+        buf.extend(t3.to_bytes());
+
+        let parsed = Tlv::parse_all(&buf).unwrap();
+        assert_eq!(parsed, vec![t1, t2, t3]);
+    }
 }
+
