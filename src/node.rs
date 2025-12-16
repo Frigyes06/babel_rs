@@ -14,7 +14,6 @@ use crate::packet::{BABEL_PORT, MULTICAST_V4_ADDR, Packet};
 use crate::routing::{Route, RouteKey, RoutingTable};
 use crate::tlv::Tlv;
 
-/// Configuration for a Babel node.
 #[derive(Debug, Clone)]
 pub struct BabelConfig {
     pub hello_interval_ms: u16,
@@ -25,6 +24,19 @@ impl Default for BabelConfig {
         BabelConfig {
             hello_interval_ms: 4000,
         }
+    }
+}
+
+impl BabelConfig {
+    /// Create a new config with sensible defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the hello interval (in milliseconds).
+    pub fn hello_interval_ms(mut self, value: u16) -> Self {
+        self.hello_interval_ms = value;
+        self
     }
 }
 
@@ -70,7 +82,7 @@ impl BabelNode {
             source_info: HashMap::new(), // <--- new
         })
     }
-
+    
     pub fn poll(&mut self) -> io::Result<()> {
         if let Err(e) = self.maybe_send_hello() {
             eprintln!("[BabelNode] error sending hello: {e}");
@@ -83,8 +95,24 @@ impl BabelNode {
         Ok(())
     }
 
+    /// Current router-id of this node.
     pub fn router_id(&self) -> [u8; 8] {
         self.router_id
+    }
+
+    /// Immutable view of all known neighbors.
+    pub fn neighbors(&self) -> impl Iterator<Item = &crate::neighbor::Neighbor> {
+        self.neighbors.all()
+    }
+
+    /// Immutable view of all known routes.
+    pub fn routes(&self) -> &[crate::routing::Route] {
+        self.routes.all()
+    }
+
+    /// Convenience: best route for a given key, if any.
+    pub fn best_route(&self, key: &crate::routing::RouteKey) -> Option<&crate::routing::Route> {
+        self.routes.best_route(key)
     }
 
     pub fn seqno(&self) -> u16 {
