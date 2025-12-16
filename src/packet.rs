@@ -99,7 +99,6 @@ impl Packet {
         Ok((pkt.tlvs, src))
     }
 
-
     //=== RFC-compliant convenience builders ===
     pub fn build_pad1() -> Self {
         Packet::with_tlvs(vec![Tlv::Pad1])

@@ -10,7 +10,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::thread;
 use std::time::Duration;
 
-use packet::{Packet, BABEL_PORT, MULTICAST_V4_ADDR};
+use packet::{BABEL_PORT, MULTICAST_V4_ADDR, Packet};
 
 fn main() -> io::Result<()> {
     // Bind a UDP socket to all interfaces on the Babel port
