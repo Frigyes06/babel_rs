@@ -17,6 +17,11 @@ pub struct Packet {
 }
 
 impl Packet {
+    /// Babel magic value used in the packet header (RFC 8966 §4.2)
+    pub const BABEL_MAGIC: u8 = 42;
+    /// Babel protocol version used in the packet header (RFC 8966 §4.2)
+    pub const BABEL_VERSION: u8 = 2;
+
     /// Create an empty packet
     pub fn new() -> Self {
         Packet { tlvs: Vec::new() }
@@ -34,14 +39,17 @@ impl Packet {
 
     /// Serialize packet with Babel header (Magic, Version, Body length) and TLV body
     pub fn to_bytes(&self) -> Vec<u8> {
+        // Serialize TLV body first
         let body: Vec<u8> = self.tlvs.iter().flat_map(|t| t.to_bytes()).collect();
+        let body_len = body.len() as u16;
+
+        // Build header + body
         let mut buf = Vec::with_capacity(4 + body.len());
-        buf.push(42); // Magic = 42 must match RFC8966 §4.2
-        buf.push(2); // Version = 2
-        let len = body.len() as u16;
-        buf.push((len >> 8) as u8);
-        buf.push((len & 0xFF) as u8);
-        buf.extend(&body);
+        buf.push(Self::BABEL_MAGIC); // Magic
+        buf.push(Self::BABEL_VERSION); // Version
+        buf.extend_from_slice(&body_len.to_be_bytes()); // Body length
+        buf.extend_from_slice(&body); // TLVs
+
         buf
     }
 
@@ -60,6 +68,21 @@ impl Packet {
 
         let tlvs = Tlv::parse_all(tlv_slice)?;
         Ok(Packet { tlvs })
+    }
+
+    /// Return the Babel magic value (first header byte).
+    pub fn magic() -> u8 {
+        Self::BABEL_MAGIC
+    }
+
+    /// Return the Babel protocol version (second header byte).
+    pub fn version() -> u8 {
+        Self::BABEL_VERSION
+    }
+
+    /// Compute the body length field for the header (number of TLV bytes).
+    pub fn body_len(&self) -> u16 {
+        self.tlvs.iter().map(|t| t.to_bytes().len()).sum::<usize>() as u16
     }
 
     /// Send this packet via a new UDP socket to a destination address (IPv4 or IPv6)
