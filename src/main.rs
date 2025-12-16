@@ -1,73 +1,29 @@
 // src/main.rs
-// Simple Babel node using TLV and Packet modules
 
-// Declare modules from this crate
+mod neighbor;
+mod node;
 mod packet;
 mod tlv;
 
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
-use std::thread;
-use std::time::Duration;
+use std::net::Ipv4Addr;
 
-use packet::{BABEL_PORT, MULTICAST_V4_ADDR, Packet};
+use node::{BabelConfig, BabelNode};
 
 fn main() -> io::Result<()> {
-    // Bind a UDP socket to all interfaces on the Babel port
-    let socket = UdpSocket::bind(("0.0.0.0", BABEL_PORT))?;
-    // Join the Babel IPv4 multicast group
-    socket.join_multicast_v4(&MULTICAST_V4_ADDR, &Ipv4Addr::UNSPECIFIED)?;
+    // Example router-id – you’ll want something stable/derived from an address.
+    let router_id: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
 
-    // Clone socket for the receiver thread
-    let recv_socket = socket.try_clone()?;
+    // Bind on all interfaces (for testing you might set this to a specific iface address)
+    let iface = Ipv4Addr::UNSPECIFIED;
+    let iface_index = 0;
 
-    // Spawn receiver thread
-    thread::spawn(move || {
-        let mut buf = [0u8; 1500];
-        loop {
-            match Packet::recv(&recv_socket, &mut buf) {
-                Ok((tlvs, src)) => {
-                    println!("[Received {} TLVs from {}]", tlvs.len(), src);
-                    for tlv in tlvs {
-                        println!("  TLV: {:?}", tlv);
-                    }
-                }
-                Err(e) => eprintln!("Receive error: {}", e),
-            }
-        }
-    });
+    let config = BabelConfig {
+        hello_interval_ms: 1000,
+    };
 
-    // Periodically send Hello messages on the same socket
-    let mut seqno: u16 = 1;
-    let flags: u16 = 0; // no-special flags
-    let interval_ms: u16 = 1000; // 1 second
+    let mut node = BabelNode::new_v4_multicast(iface, iface_index, router_id, config)?;
+    println!("Babel node started with router-id {:?}", router_id);
 
-    loop {
-        // Build and serialize a Hello TLV
-        let mut packet = Packet::new();
-        packet.add_tlv(tlv::Tlv::Hello {
-            flags: flags,
-            seqno: seqno,
-            interval: interval_ms,
-            sub_tlvs: Vec::new(),
-        });
-        packet.add_tlv(tlv::Tlv::AckRequest {
-            opaque: 255,
-            interval: 200,
-            sub_tlvs: Vec::new(),
-        });
-        packet.add_tlv(tlv::Tlv::PadN { n: 255 });
-        //let hello_pkt = Packet::build_hello(flags, seqno, interval_ms);
-        let payload = packet.to_bytes();
-        let dest: SocketAddr = (MULTICAST_V4_ADDR, BABEL_PORT).into();
-
-        // Send via the bound socket on 0.0.0.0
-        match socket.send_to(&payload, dest) {
-            Ok(n) => println!("Sent Hello #{} ({} bytes)", seqno, n),
-            Err(e) => eprintln!("Send error: {}", e),
-        }
-
-        seqno = seqno.wrapping_add(1);
-        thread::sleep(Duration::from_millis(interval_ms as u64));
-    }
+    node.run()
 }
