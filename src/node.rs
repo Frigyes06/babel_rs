@@ -82,7 +82,7 @@ impl BabelNode {
             source_info: HashMap::new(), // <--- new
         })
     }
-    
+
     pub fn poll(&mut self) -> io::Result<()> {
         if let Err(e) = self.maybe_send_hello() {
             eprintln!("[BabelNode] error sending hello: {e}");
