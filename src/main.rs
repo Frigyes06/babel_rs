@@ -3,6 +3,7 @@
 mod neighbor;
 mod node;
 mod packet;
+mod routing;
 mod tlv;
 
 use std::io;
