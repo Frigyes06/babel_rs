@@ -9,7 +9,7 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use crate::packet::{Packet, BABEL_PORT, MULTICAST_V4_ADDR};
+use crate::packet::{BABEL_PORT, MULTICAST_V4_ADDR, Packet};
 use crate::tlv::Tlv;
 
 /// Configuration for a simple Babel node.
