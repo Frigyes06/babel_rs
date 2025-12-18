@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn table_updates_neighbors() {
-        let mut tbl = NeighborTable::new();
+        let mut tbl = NeighborTable::default();
         let a = addr();
         let now = Instant::now();
 
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn prune_removes_stale_neighbors() {
-        let mut tbl = NeighborTable::new();
+        let mut tbl = NeighborTable::default();
         let a = addr();
         let now = Instant::now();
 
