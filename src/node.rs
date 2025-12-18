@@ -206,7 +206,9 @@ impl BabelNode {
         let pkt = Packet::build_hello(flags, self.seqno, interval_ms);
         let dest: SocketAddr = (MULTICAST_V4_ADDR, BABEL_PORT).into();
 
-        let sent_bytes = pkt.send_to(dest)?;
+        let buf = pkt.to_bytes();
+        let sent_bytes = self.socket.send_to(&buf, dest)?;
+
         self.seqno = self.seqno.wrapping_add(1);
         self.last_hello = Some(Instant::now());
         Ok(sent_bytes)
@@ -232,11 +234,7 @@ impl BabelNode {
     fn send_ihus(&mut self) -> io::Result<usize> {
         let mut total_bytes = 0usize;
 
-        let interval_ms: u16 = self
-            .ihu_interval
-            .as_millis()
-            .try_into()
-            .unwrap_or(u16::MAX);
+        let interval_ms: u16 = self.ihu_interval.as_millis().try_into().unwrap_or(u16::MAX);
         let rxcost: u16 = 256;
 
         for n in self.neighbors.all() {
@@ -247,7 +245,8 @@ impl BabelNode {
             };
 
             let pkt = Packet::build_ihu(ae, rxcost, interval_ms, addr_opt);
-            total_bytes += pkt.send_to(n.addr)?;
+            let buf = pkt.to_bytes();
+            total_bytes += self.socket.send_to(&buf, n.addr)?;
         }
 
         Ok(total_bytes)
@@ -288,21 +287,33 @@ impl BabelNode {
             .try_into()
             .unwrap_or(u16::MAX);
 
+        let dest: SocketAddr = (MULTICAST_V4_ADDR, BABEL_PORT).into();
+
         for p in &self.advertised_prefixes {
-            let pkt = Packet::build_update(
-                p.ae,
-                0, // flags
-                p.plen,
-                0, // omitted
-                interval_ms,
-                self.seqno,
-                p.metric,
-                p.prefix.clone(),
-            );
-            let dest: SocketAddr = (MULTICAST_V4_ADDR, BABEL_PORT).into();
-            total_bytes += pkt.send_to(dest)?;
+            // Build RouterId + Update in the same packet
+            let router_tlv = Tlv::RouterId {
+                router_id: self.router_id,
+                sub_tlvs: Vec::new(),
+            };
+
+            let update_tlv = Tlv::Update {
+                ae: p.ae,
+                flags: 0,
+                plen: p.plen,
+                omitted: 0,
+                interval: interval_ms,
+                seqno: self.seqno,
+                metric: p.metric,
+                prefix: p.prefix.clone(),
+                sub_tlvs: Vec::new(),
+            };
+
+            let pkt = Packet::with_tlvs(vec![router_tlv, update_tlv]);
+            let buf = pkt.to_bytes();
+            total_bytes += self.socket.send_to(&buf, dest)?;
         }
 
+        // Bump seqno once per batch
         self.seqno = self.seqno.wrapping_add(1);
         Ok(total_bytes)
     }
@@ -375,7 +386,7 @@ impl BabelNode {
         }
     }
 
-        /// Register our own advertised prefixes as local routes.
+    /// Register our own advertised prefixes as local routes.
     fn install_local_advertised_routes(&mut self) {
         // Clone prefixes so we don't hold an immutable borrow of `self`
         // while calling a `&mut self` method.
@@ -409,6 +420,17 @@ impl BabelNode {
         let now = Instant::now();
         let src_ip = src.ip();
         let iface_index = self.iface_index;
+
+        // If we ever get packets that clearly come from ourselves, ignore them.
+        if let Ok(local_addr) = self.socket.local_addr() {
+            if src_ip == local_addr.ip() {
+                // Same IP and same port -> almost certainly self.
+                if src.port() == local_addr.port() {
+                    eprintln!("[BabelNode] ignoring packet from self: {}", src);
+                    return;
+                }
+            }
+        }
 
         for tlv in tlvs {
             match tlv {

@@ -222,6 +222,8 @@ impl Packet {
     pub fn bind_multicast_v4(interface: Ipv4Addr) -> io::Result<UdpSocket> {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, BABEL_PORT))?;
         socket.join_multicast_v4(&MULTICAST_V4_ADDR, &interface)?;
+        // Don't receive our own multicast packets.
+        socket.set_multicast_loop_v4(false)?;
         Ok(socket)
     }
 
