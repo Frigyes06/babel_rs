@@ -232,11 +232,7 @@ impl BabelNode {
     fn send_ihus(&mut self) -> io::Result<usize> {
         let mut total_bytes = 0usize;
 
-        let interval_ms: u16 = self
-            .ihu_interval
-            .as_millis()
-            .try_into()
-            .unwrap_or(u16::MAX);
+        let interval_ms: u16 = self.ihu_interval.as_millis().try_into().unwrap_or(u16::MAX);
         let rxcost: u16 = 256;
 
         for n in self.neighbors.all() {
@@ -375,7 +371,7 @@ impl BabelNode {
         }
     }
 
-        /// Register our own advertised prefixes as local routes.
+    /// Register our own advertised prefixes as local routes.
     fn install_local_advertised_routes(&mut self) {
         // Clone prefixes so we don't hold an immutable borrow of `self`
         // while calling a `&mut self` method.
