@@ -1,5 +1,8 @@
 // src/node.rs
 //! High-level Babel node abstraction.
+//!
+//! This wraps Packet + TLV + NeighborTable + RoutingTable into a usable component
+//! that can send hellos, IHUs, updates, receive packets, and maintain state.
 
 use std::collections::HashMap;
 use std::io;
@@ -116,7 +119,7 @@ impl BabelNode {
         let socket = Packet::bind_multicast_v4(iface_addr)?;
         socket.set_nonblocking(true)?;
 
-        Ok(BabelNode {
+        let mut node = BabelNode {
             socket,
             router_id,
             seqno: 1,
@@ -132,10 +135,15 @@ impl BabelNode {
             routes: RoutingTable::new(),
             source_info: HashMap::new(),
             events: Vec::new(),
-        })
+        };
+
+        // Register our own advertised prefixes as local routes on startup.
+        node.install_local_advertised_routes();
+
+        Ok(node)
     }
 
-    /// One non-blocking iteration of the node.
+    /// One non-blocking iteration of the node: send timers, receive, prune.
     pub fn poll(&mut self) -> io::Result<()> {
         if let Err(e) = self.maybe_send_hello() {
             eprintln!("[BabelNode] error sending hello: {e}");
@@ -153,7 +161,7 @@ impl BabelNode {
             self.handle_tlvs_from(src, &tlvs);
         }
 
-        // Simple neighbor pruning hook
+        // Neighbor pruning => NeighborDown events
         let now = Instant::now();
         for addr in self.neighbors.prune_stale_with_addrs(now, 3) {
             self.push_event(Event::NeighborDown(addr));
@@ -224,7 +232,11 @@ impl BabelNode {
     fn send_ihus(&mut self) -> io::Result<usize> {
         let mut total_bytes = 0usize;
 
-        let interval_ms: u16 = self.ihu_interval.as_millis().try_into().unwrap_or(u16::MAX);
+        let interval_ms: u16 = self
+            .ihu_interval
+            .as_millis()
+            .try_into()
+            .unwrap_or(u16::MAX);
         let rxcost: u16 = 256;
 
         for n in self.neighbors.all() {
@@ -328,7 +340,71 @@ impl BabelNode {
         }
     }
 
-    /// Process TLVs received from a given source.
+    /// Helper: install a route into the table and emit RouteUpdated / BestRouteChanged events.
+    fn install_route_and_emit_events(&mut self, key: RouteKey, route: Route) {
+        let old_best = self.routes.best_route(&key).cloned();
+
+        let changed = self.routes.install_or_update(route);
+        if !changed {
+            return;
+        }
+
+        if let Some(best) = self.routes.best_route(&key).cloned() {
+            // RouteUpdated: some path for this key changed (we expose the current best).
+            self.push_event(Event::RouteUpdated(key.clone(), best.clone()));
+
+            // Did the best route actually change?
+            let best_changed = match old_best {
+                None => true,
+                Some(ref old) => {
+                    old.metric != best.metric
+                        || old.seqno != best.seqno
+                        || old.router_id != best.router_id
+                        || old.next_hop != best.next_hop
+                }
+            };
+
+            if best_changed {
+                self.push_event(Event::BestRouteChanged(key.clone(), best.clone()));
+            }
+
+            println!(
+                "[BabelNode] new/updated route installed; best now: {}",
+                best.summary()
+            );
+        }
+    }
+
+        /// Register our own advertised prefixes as local routes.
+    fn install_local_advertised_routes(&mut self) {
+        // Clone prefixes so we don't hold an immutable borrow of `self`
+        // while calling a `&mut self` method.
+        let prefixes = self.advertised_prefixes.clone();
+        let router_id = self.router_id;
+        let iface_index = self.iface_index;
+        let seqno = self.seqno; // starting local seqno for our own routes
+
+        for p in prefixes {
+            let key = RouteKey {
+                ae: p.ae,
+                plen: p.plen,
+                prefix: p.prefix.clone(),
+            };
+
+            let route = Route {
+                key: key.clone(),
+                metric: p.metric,
+                seqno,
+                router_id,
+                next_hop: None,
+                iface_index,
+            };
+
+            self.install_route_and_emit_events(key, route);
+        }
+    }
+
+    /// Process TLVs received from a given source, emitting events as needed.
     pub fn handle_tlvs_from(&mut self, src: SocketAddr, tlvs: &[Tlv]) {
         let now = Instant::now();
         let src_ip = src.ip();
@@ -378,6 +454,7 @@ impl BabelNode {
                     prefix,
                     sub_tlvs: _,
                 } => {
+                    // This is where we register new routes from *remote routers*.
                     let router_id_opt = self.source_info.get(&src).and_then(|si| si.router_id);
 
                     if let Some(router_id) = router_id_opt {
@@ -393,8 +470,6 @@ impl BabelNode {
                             prefix: prefix.clone(),
                         };
 
-                        let old_best = self.routes.best_route(&key).cloned();
-
                         let route = Route {
                             key: key.clone(),
                             metric: *metric,
@@ -404,31 +479,7 @@ impl BabelNode {
                             iface_index,
                         };
 
-                        let changed = self.routes.install_or_update(route);
-                        if changed {
-                            if let Some(best) = self.routes.best_route(&key).cloned() {
-                                self.push_event(Event::RouteUpdated(key.clone(), best.clone()));
-
-                                let best_changed = match old_best {
-                                    None => true,
-                                    Some(ref old) => {
-                                        old.metric != best.metric || old.seqno != best.seqno
-                                    }
-                                };
-
-                                if best_changed {
-                                    self.push_event(Event::BestRouteChanged(
-                                        key.clone(),
-                                        best.clone(),
-                                    ));
-                                }
-
-                                println!(
-                                    "[BabelNode] new/updated route installed; best now: {}",
-                                    best.summary()
-                                );
-                            }
-                        }
+                        self.install_route_and_emit_events(key, route);
                     } else {
                         eprintln!(
                             "[BabelNode] ignoring Update from {}: unknown router-id",
